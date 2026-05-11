@@ -313,6 +313,7 @@ input:focus, select:focus, textarea:focus {
 .empty-state-box:hover { border-color: var(--ink); background: var(--bg-2); }
 
 .task { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; transition: all 0.15s; position: relative; }
+.task.task-compact { padding: 0; overflow: visible; }
 .task[draggable="true"] { cursor: grab; }
 .task[draggable="true"]:active { cursor: grabbing; }
 .task.task-dragging { opacity: 0.4; transform: scale(0.98); }
@@ -336,6 +337,107 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--ink);
   box-shadow: 0 0 0 3px rgba(26, 26, 26, 0.06);
 }
+
+/* === COMPACT TASK ROW === */
+.task-compact-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.task-compact-row:hover { background: var(--bg-2); }
+.task-compact-chevron {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-3); transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+.task-compact-chevron.open { transform: rotate(90deg); }
+.task-compact-title {
+  flex: 1; min-width: 0;
+  font-size: 13.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-compact-meta {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--ink-3); font-weight: 600;
+  flex-shrink: 0;
+}
+.task-compact-people {
+  display: inline-flex; align-items: center; gap: 4px;
+  flex-shrink: 0;
+}
+.task-compact-empty { font-size: 11px; color: var(--ink-4); padding: 2px 6px; }
+.task-compact-plus {
+  font-size: 10px; color: var(--ink-3); font-weight: 600;
+  padding: 0 2px;
+}
+.task-compact-expanded {
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--paper-soft);
+  animation: expandIn 0.2s ease;
+}
+@keyframes expandIn {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 1000px; }
+}
+
+/* === COMPLETED TASKS TOGGLE === */
+.completed-toggle {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; padding: 10px 14px;
+  background: transparent; border: 1px dashed var(--line-2);
+  border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 600; color: var(--ink-3);
+  cursor: pointer; transition: all 0.15s;
+  margin-top: 4px;
+}
+.completed-toggle:hover {
+  background: var(--bg-2);
+  border-color: var(--line-3);
+  color: var(--ink);
+}
+.completed-toggle-chevron {
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+.completed-toggle-chevron.open { transform: rotate(90deg); }
+.completed-task-list {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 8px;
+  opacity: 0.85;
+}
+.completed-task-list .task { background: var(--paper-soft); }
+
+/* === VIEW MODE TOGGLE === */
+.view-mode-toggle {
+  display: inline-flex;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: 100px;
+  padding: 3px;
+  gap: 2px;
+}
+.view-mode-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 100px;
+  font-size: 12px; font-weight: 600;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.view-mode-btn:hover { color: var(--ink); background: var(--bg-2); }
+.view-mode-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.view-mode-btn.active:hover { background: var(--accent-soft); }
+.view-mode-btn svg { display: block; }
 .task:hover { border-color: var(--line-3); }
 .task-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .task-t { font-size: 15px; font-weight: 700; line-height: 1.4; word-break: keep-all; letter-spacing: -0.005em; flex: 1; min-width: 0; }
@@ -898,6 +1000,9 @@ let state = {
   data: null, modal: null, openDropdown: null, filter: null,
   draggingProject: null, dragOverCategory: null,
   draggingTask: null,
+  taskViewMode: 'compact', // 'compact' | 'detail'
+  expandedTaskId: null, // 간단 모드에서 펼쳐진 업무 ID
+  showCompletedTasks: false, // 완료된 업무 펼침 여부 (프로젝트별로 관리하려면 객체로)
   page: 'home', // home | archive
   loginError: null,
   syncStatus: 'offline', // offline | syncing | online
@@ -1309,6 +1414,20 @@ function showProject(id) { state.view = 'project'; state.currentProject = id; re
 function showHome() { state.view = 'home'; state.page = 'home'; state.currentProject = null; render(); }
 function showArchive() { state.view = 'home'; state.page = 'archive'; state.currentProject = null; render(); }
 function setFilter(f) { state.filter = state.filter === f ? null : f; render(); }
+function toggleTaskViewMode() {
+  state.taskViewMode = state.taskViewMode === 'compact' ? 'detail' : 'compact';
+  state.expandedTaskId = null; // 모드 전환 시 펼침 초기화
+  render();
+}
+function toggleExpandTask(taskId, ev) {
+  if (ev) ev.stopPropagation();
+  state.expandedTaskId = state.expandedTaskId === taskId ? null : taskId;
+  render();
+}
+function toggleShowCompleted() {
+  state.showCompletedTasks = !state.showCompletedTasks;
+  render();
+}
 function openModal(name, ctx = {}) { state.modal = { name, ...ctx }; render(); }
 function closeModal() { state.modal = null; render(); }
 function toggleDropdown(id, ev) {
@@ -1648,6 +1767,86 @@ function formatNoteTime(ts) {
   if (diffHour < 24) return `${diffHour}시간 전`;
   if (diffDay < 7) return `${diffDay}일 전`;
   return `${d.getMonth() + 1}.${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function renderTaskDetail(t, isArchived) {
+  // 상세 모드 - 모든 정보 표시
+  const participants = t.participants || [];
+  return `
+    ${!isArchived ? `
+      <div class="task-body">
+        <div class="task-status-col">
+          <div class="task-col-label">상태</div>
+          <div class="status-buttons">
+            <button class="status-btn ${t.status === 'todo' ? 'active s-todo-active' : ''}" onclick="changeStatus('${t.id}', 'todo')">
+              <i class="ti ti-circle-dashed"></i> 대기
+            </button>
+            <button class="status-btn ${t.status === 'progress' ? 'active s-progress' : ''}" onclick="changeStatus('${t.id}', 'progress')">
+              <i class="ti ti-progress-alert"></i> 진행
+            </button>
+            <button class="status-btn ${t.status === 'done' ? 'active s-done' : ''}" onclick="changeStatus('${t.id}', 'done')">
+              <i class="ti ti-circle-check"></i> 완료
+            </button>
+          </div>
+        </div>
+
+        <div class="task-people-col">
+          <div class="task-col-label">담당자</div>
+          <div class="people-rows">
+            <div class="people-row">
+              <span class="people-row-label">담당</span>
+              <div class="dd" style="flex: 1; min-width: 0;">
+                <button class="people-pick" data-dd-trigger onclick="toggleDropdown('a-${t.id}', event)">
+                  ${t.assigneeId ? `${avatarHtml(t.assigneeId, 20)}<span class="people-pick-name">${escapeHtml(avatarFor(t.assigneeId)?.name || '')}</span>` : '<span class="people-pick-empty">+ 선택</span>'}
+                  <i class="ti ti-chevron-down people-pick-icon"></i>
+                </button>
+                ${state.openDropdown === `a-${t.id}` ? dropdownMenu(t.id, 'assignee') : ''}
+              </div>
+            </div>
+            <div class="people-row">
+              <span class="people-row-label">참여</span>
+              <div class="dd" style="flex: 1; min-width: 0;">
+                <button class="people-pick" data-dd-trigger onclick="toggleDropdown('p-${t.id}', event)">
+                  ${participants.length > 0 ? `<span class="people-pick-avs">${participants.slice(0, 4).map(id => avatarHtml(id, 18)).join('')}${participants.length > 4 ? `<span class="av-stack-extra">+${participants.length - 4}</span>` : ''}</span>` : '<span class="people-pick-empty">+ 선택</span>'}
+                  <i class="ti ti-chevron-down people-pick-icon"></i>
+                </button>
+                ${state.openDropdown === `p-${t.id}` ? dropdownMenu(t.id, 'participants') : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      ${renderNotesSection(t)}
+
+      <div class="task-foot">
+        <button class="tiny ghost danger-btn" onmousedown="event.stopPropagation();" onclick="event.stopPropagation(); deleteTask('${t.id}'); return false;"><i class="ti ti-trash" style="font-size: 12px;"></i> 삭제</button>
+      </div>
+    ` : `${renderNotesSection(t, true)}`}
+  `;
+}
+
+function renderTaskCompact(t, isArchived) {
+  // 간단 모드 - 한 줄 요약
+  const participants = t.participants || [];
+  const noteCount = (t.notes || []).length;
+  const isExpanded = state.expandedTaskId === t.id;
+  return `
+    <div class="task-compact-row" onclick="toggleExpandTask('${t.id}', event)">
+      ${!isArchived ? '<span class="task-drag-handle" title="드래그로 순서 변경"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg></span>' : ''}
+      <span class="task-compact-chevron ${isExpanded ? 'open' : ''}">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+      </span>
+      <div class="task-compact-title">${escapeHtml(t.title)}</div>
+      ${noteCount > 0 ? `<span class="task-compact-meta" title="메모 ${noteCount}개"><i class="ti ti-message-circle-2" style="font-size: 13px;"></i> ${noteCount}</span>` : ''}
+      <div class="task-compact-people">
+        ${t.assigneeId ? avatarHtml(t.assigneeId, 22) : '<span class="task-compact-empty">미정</span>'}
+        ${participants.length > 0 ? `<span class="task-compact-plus">+${participants.length}</span>` : ''}
+      </div>
+      ${statusBadge(t.status)}
+    </div>
+    ${isExpanded ? `<div class="task-compact-expanded">${renderTaskDetail(t, isArchived)}</div>` : ''}
+  `;
 }
 
 function renderNotesSection(t, isArchived = false) {
@@ -2291,7 +2490,19 @@ function renderProject() {
             <span class="detail-meta-i"><i class="ti ti-list-check"></i> 업무 ${p.tasks.length}건</span>
           </div>
         </div>
-        <div style="display: flex; gap: 6px;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+          ${!isArchived ? `
+            <div class="view-mode-toggle">
+              <button class="view-mode-btn ${state.taskViewMode === 'compact' ? 'active' : ''}" onclick="toggleTaskViewMode()" title="간단히 보기">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                간단
+              </button>
+              <button class="view-mode-btn ${state.taskViewMode === 'detail' ? 'active' : ''}" onclick="toggleTaskViewMode()" title="상세히 보기">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                상세
+              </button>
+            </div>
+          ` : ''}
           ${isArchived ? `<button class="sm" onclick="restoreProject('${p.id}')"><i class="ti ti-arrow-back-up"></i> 다시 진행중으로</button>` : ''}
           <button class="sm icon ghost" onclick="deleteProject('${p.id}')" title="프로젝트 삭제"><i class="ti ti-trash"></i></button>
         </div>
@@ -2317,75 +2528,49 @@ function renderProject() {
               <div class="task-list">
                 ${tasks.length === 0 ? `<div class="empty-state-box" ${!isArchived ? `onclick="openModal('addTask', { dept: '${key}' })"` : ''}>
                   ${!isArchived ? `<i class="ti ti-circle-plus" style="font-size: 24px; color: var(--ink-4); margin-bottom: 6px; display: block;"></i><div style="font-size: 13px; color: var(--ink-3); font-weight: 500;">${dept.label} 업무 추가</div><div style="font-size: 11px; color: var(--ink-4); margin-top: 2px;">클릭해서 첫 업무를 만들어보세요</div>` : '<div class="empty-state">등록된 업무가 없습니다</div>'}
-                </div>` : tasks.map(t => {
-                  const participants = t.participants || [];
-                  return `
-                    <div class="task" data-task-id="${t.id}"
-                         ${!isArchived ? `draggable="true"
-                         ondragstart="taskDragStart(event, '${t.id}')"
-                         ondragend="taskDragEnd(event)"
-                         ondragover="taskDragOverTask(event, '${t.id}')"
-                         ondragleave="taskDragLeaveTask(event)"
-                         ondrop="taskDropOnTask(event, '${t.id}')"` : ''}>
-                      <div class="task-head">
-                        ${!isArchived ? '<span class="task-drag-handle" title="드래그로 순서 변경"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg></span>' : ''}
-                        <div class="task-t">${escapeHtml(t.title)}</div>
-                        ${statusBadge(t.status)}
+                </div>` : (() => {
+                  const activeTasks = tasks.filter(t => t.status !== 'done');
+                  const doneTasks = tasks.filter(t => t.status === 'done');
+                  const useCompactMode = state.taskViewMode === 'compact' && !isArchived;
+                  
+                  const renderTaskCard = (t) => {
+                    const dragAttrs = !isArchived ? `draggable="true"
+                       ondragstart="taskDragStart(event, '${t.id}')"
+                       ondragend="taskDragEnd(event)"
+                       ondragover="taskDragOverTask(event, '${t.id}')"
+                       ondragleave="taskDragLeaveTask(event)"
+                       ondrop="taskDropOnTask(event, '${t.id}')"` : '';
+                    
+                    if (useCompactMode) {
+                      return `<div class="task task-compact" data-task-id="${t.id}" ${dragAttrs}>${renderTaskCompact(t, isArchived)}</div>`;
+                    }
+                    // 상세 모드
+                    return `
+                      <div class="task" data-task-id="${t.id}" ${dragAttrs}>
+                        <div class="task-head">
+                          ${!isArchived ? '<span class="task-drag-handle" title="드래그로 순서 변경"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg></span>' : ''}
+                          <div class="task-t">${escapeHtml(t.title)}</div>
+                          ${statusBadge(t.status)}
+                        </div>
+                        <div class="task-time"><i class="ti ti-clock"></i> ${escapeHtml(t.updated)}</div>
+                        ${renderTaskDetail(t, isArchived)}
                       </div>
-                      <div class="task-time"><i class="ti ti-clock"></i> ${escapeHtml(t.updated)}</div>
-                      ${!isArchived ? `
-                        <div class="task-body">
-                          <div class="task-status-col">
-                            <div class="task-col-label">상태</div>
-                            <div class="status-buttons">
-                              <button class="status-btn ${t.status === 'todo' ? 'active s-todo-active' : ''}" onclick="changeStatus('${t.id}', 'todo')">
-                                <i class="ti ti-circle-dashed"></i> 대기
-                              </button>
-                              <button class="status-btn ${t.status === 'progress' ? 'active s-progress' : ''}" onclick="changeStatus('${t.id}', 'progress')">
-                                <i class="ti ti-progress-alert"></i> 진행
-                              </button>
-                              <button class="status-btn ${t.status === 'done' ? 'active s-done' : ''}" onclick="changeStatus('${t.id}', 'done')">
-                                <i class="ti ti-circle-check"></i> 완료
-                              </button>
-                            </div>
-                          </div>
-
-                          <div class="task-people-col">
-                            <div class="task-col-label">담당자</div>
-                            <div class="people-rows">
-                              <div class="people-row">
-                                <span class="people-row-label">담당</span>
-                                <div class="dd" style="flex: 1; min-width: 0;">
-                                  <button class="people-pick" data-dd-trigger onclick="toggleDropdown('a-${t.id}', event)">
-                                    ${t.assigneeId ? `${avatarHtml(t.assigneeId, 20)}<span class="people-pick-name">${escapeHtml(avatarFor(t.assigneeId)?.name || '')}</span>` : '<span class="people-pick-empty">+ 선택</span>'}
-                                    <i class="ti ti-chevron-down people-pick-icon"></i>
-                                  </button>
-                                  ${state.openDropdown === `a-${t.id}` ? dropdownMenu(t.id, 'assignee') : ''}
-                                </div>
-                              </div>
-                              <div class="people-row">
-                                <span class="people-row-label">참여</span>
-                                <div class="dd" style="flex: 1; min-width: 0;">
-                                  <button class="people-pick" data-dd-trigger onclick="toggleDropdown('p-${t.id}', event)">
-                                    ${participants.length > 0 ? `<span class="people-pick-avs">${participants.slice(0, 4).map(id => avatarHtml(id, 18)).join('')}${participants.length > 4 ? `<span class="av-stack-extra">+${participants.length - 4}</span>` : ''}</span>` : '<span class="people-pick-empty">+ 선택</span>'}
-                                    <i class="ti ti-chevron-down people-pick-icon"></i>
-                                  </button>
-                                  ${state.openDropdown === `p-${t.id}` ? dropdownMenu(t.id, 'participants') : ''}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        ${renderNotesSection(t)}
-
-                        <div class="task-foot">
-                          <button class="tiny ghost danger-btn" onmousedown="event.stopPropagation();" onclick="event.stopPropagation(); deleteTask('${t.id}'); return false;"><i class="ti ti-trash" style="font-size: 12px;"></i> 삭제</button>
-                        </div>
-                      ` : `${renderNotesSection(t, true)}`}
-                    </div>
+                    `;
+                  };
+                  
+                  return `
+                    ${activeTasks.length === 0 && doneTasks.length > 0 ? '<div class="empty-state" style="padding: 16px 0;">진행 중인 업무가 없습니다</div>' : ''}
+                    ${activeTasks.map(renderTaskCard).join('')}
+                    ${doneTasks.length > 0 && !isArchived ? `
+                      <button class="completed-toggle" onclick="toggleShowCompleted()">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="completed-toggle-chevron ${state.showCompletedTasks ? 'open' : ''}"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                        <i class="ti ti-circle-check" style="color: var(--c-green-ink);"></i>
+                        완료된 업무 ${doneTasks.length}개 ${state.showCompletedTasks ? '숨기기' : '보기'}
+                      </button>
+                      ${state.showCompletedTasks ? `<div class="completed-task-list">${doneTasks.map(renderTaskCard).join('')}</div>` : ''}
+                    ` : doneTasks.length > 0 && isArchived ? doneTasks.map(renderTaskCard).join('') : ''}
                   `;
-                }).join('')}
+                })()}
               </div>
             </div>
           `;
