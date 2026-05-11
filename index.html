@@ -807,32 +807,63 @@ const STORAGE_KEY = 'exoproxyl-board-data-v5';
 const USER_KEY = 'exoproxyl-current-user-v5';
 
 /* === FIRESTORE SYNC === */
+let firstSnapshotReceived = false; // 첫 snap 받기 전엔 push 금지
+
 function startFirestoreSync() {
   if (!window.firebaseReady || !window.firestoreDb) return;
   state.syncStatus = 'syncing';
+  firstSnapshotReceived = false;
+  console.log('[Firestore] 동기화 시작...');
+  
   const docRef = window.firestoreDoc(window.firestoreDb, 'boards', window.SHARED_DOC_ID);
   state.unsubscribeFirestore = window.firestoreOnSnapshot(docRef, (snap) => {
     if (snap.exists()) {
       const remote = snap.data();
+      console.log('[Firestore] 원격 데이터 수신, 크기:', remote.payload?.length || 0);
+      
       if (remote.payload) {
+        // 원격 데이터를 로컬에 적용
         state.isApplyingRemoteUpdate = true;
-        state.data = JSON.parse(remote.payload);
-        normalizeData();
-        autoArchive();
+        try {
+          const remoteData = JSON.parse(remote.payload);
+          state.data = remoteData;
+          normalizeData();
+          autoArchive();
+          saveLocal();
+          console.log('[Firestore] 데이터 적용 완료. 멤버:', state.data.members.length, '프로젝트:', state.data.projects.length);
+        } catch (e) {
+          console.error('[Firestore] 원격 데이터 파싱 실패', e);
+        }
         state.isApplyingRemoteUpdate = false;
+        firstSnapshotReceived = true;
         state.syncStatus = 'online';
-        saveLocal();
         render();
       } else {
-        // 첫 사용 — 현재 로컬 데이터를 클라우드에 업로드
-        pushToFirestore();
+        // 문서는 있지만 payload가 비어있음 → 처음 사용 케이스
+        console.log('[Firestore] 빈 문서 발견, 로컬 데이터를 업로드합니다');
+        firstSnapshotReceived = true;
+        state.syncStatus = 'online';
+        // 로컬에 데이터가 있을 때만 push (빈 데이터로 덮어쓰기 방지)
+        if (state.data && (state.data.members.length > 0 || state.data.projects.length > 0)) {
+          pushToFirestore();
+        }
+        render();
       }
     } else {
-      pushToFirestore();
+      // 문서 자체가 없음 → 진짜 첫 사용
+      console.log('[Firestore] 문서 없음, 첫 사용자입니다');
+      firstSnapshotReceived = true;
+      state.syncStatus = 'online';
+      // 로컬에 데이터가 있을 때만 push
+      if (state.data && (state.data.members.length > 0 || state.data.projects.length > 0)) {
+        pushToFirestore();
+      }
+      render();
     }
   }, (err) => {
-    console.error('Firestore sync error', err);
+    console.error('[Firestore] sync error', err);
     state.syncStatus = 'offline';
+    firstSnapshotReceived = false;
     render();
   });
 }
@@ -840,17 +871,23 @@ function startFirestoreSync() {
 async function pushToFirestore() {
   if (!window.firebaseReady || !window.firestoreDb) return;
   if (state.isApplyingRemoteUpdate) return;
+  // 첫 snap 받기 전엔 push 금지 (다른 사람 데이터 덮어쓰기 방지)
+  if (!firstSnapshotReceived) {
+    console.log('[Firestore] 첫 snap 받기 전이라 push 보류');
+    return;
+  }
   try {
     state.syncStatus = 'syncing';
     const docRef = window.firestoreDoc(window.firestoreDb, 'boards', window.SHARED_DOC_ID);
     await window.firestoreSetDoc(docRef, {
       payload: JSON.stringify(state.data),
       updatedAt: window.firestoreServerTimestamp(),
-      updatedBy: state.googleUser?.email || 'demo'
+      updatedBy: state.googleUser?.email || state.googleUser?.uid || 'unknown'
     });
     state.syncStatus = 'online';
+    console.log('[Firestore] push 완료');
   } catch (e) {
-    console.error('Firestore push error', e);
+    console.error('[Firestore] push error', e);
     state.syncStatus = 'offline';
   }
 }
@@ -860,6 +897,7 @@ function stopFirestoreSync() {
     state.unsubscribeFirestore();
     state.unsubscribeFirestore = null;
   }
+  firstSnapshotReceived = false;
   state.syncStatus = 'offline';
 }
 
@@ -1007,29 +1045,50 @@ async function logout() {
   });
 }
 
-window._fbHandleLogin = (googleData) => {
+window._fbHandleLogin = async (googleData) => {
   state.loginError = null;
   console.log('[_fbHandleLogin] googleData:', googleData);
   
-  // 1) 이메일로 매칭 시도
+  // 1) 먼저 Firestore에서 최신 데이터를 받아온다 (다른 사람 데이터 덮어쓰기 방지)
+  if (window.firebaseReady && window.firestoreDb) {
+    console.log('[_fbHandleLogin] Firestore에서 최신 데이터 가져오는 중...');
+    try {
+      const { getDoc } = await import("https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js");
+      const docRef = window.firestoreDoc(window.firestoreDb, 'boards', window.SHARED_DOC_ID);
+      const snap = await getDoc(docRef);
+      if (snap.exists() && snap.data().payload) {
+        const remoteData = JSON.parse(snap.data().payload);
+        console.log('[_fbHandleLogin] 원격 데이터 수신. 멤버:', remoteData.members.length, '프로젝트:', remoteData.projects.length);
+        state.data = remoteData;
+        normalizeData();
+        autoArchive();
+        saveLocal();
+      } else {
+        console.log('[_fbHandleLogin] 원격 데이터 없음 (첫 사용자)');
+      }
+    } catch (e) {
+      console.error('[_fbHandleLogin] 원격 데이터 가져오기 실패', e);
+    }
+  }
+  
+  // 2) 이메일로 매칭 시도
   let matched = null;
   if (googleData.email && !googleData.email.endsWith('@unknown.local')) {
     matched = state.data.members.find(m => m.email && m.email.toLowerCase() === googleData.email.toLowerCase());
   }
   
-  // 2) UID로도 매칭 시도 (이메일이 없는 경우)
+  // 3) UID로도 매칭 시도 (이메일이 없는 경우)
   if (!matched && googleData.uid) {
     matched = state.data.members.find(m => m.googleUid === googleData.uid);
   }
   
   if (matched) {
-    // 매칭된 멤버 발견 → 바로 로그인
     console.log('[_fbHandleLogin] 매칭된 멤버:', matched.name);
     loginAsMember(matched.id, googleData);
     return;
   }
   
-  // 3) 매칭 안 됨 → 계정 연결 모달 표시
+  // 4) 매칭 안 됨 → 계정 연결 모달 표시
   console.log('[_fbHandleLogin] 신규 사용자, 계정 연결 모달 표시');
   state.modal = { name: 'matchGoogle', google: googleData };
   render();
@@ -1055,7 +1114,7 @@ function googleAccountToMember(memberId) {
 function googleAccountToNewMember() {
   const g = state.modal.google;
   console.log('[googleAccountToNewMember] 새 멤버 추가:', g);
-  const m = {
+  const newMember = {
     id: 'm' + Date.now(),
     name: g.name || g.email.split('@')[0] || '사용자',
     role: '팀원',
@@ -1063,10 +1122,10 @@ function googleAccountToNewMember() {
     email: g.email && !g.email.endsWith('@unknown.local') ? g.email : '',
     googleUid: g.uid  // UID로도 매칭 가능하도록 저장
   };
-  state.data.members.push(m);
+  state.data.members.push(newMember);
   saveData();
   state.modal = null;
-  loginAsMember(m.id, g);
+  loginAsMember(newMember.id, g);
 }
 
 // 계정 연결 화면에서 "다른 계정으로 로그인" 클릭 시
