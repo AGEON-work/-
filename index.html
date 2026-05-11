@@ -704,12 +704,24 @@ if (isFirebaseConfigured) {
 
     onAuthStateChanged(auth, (user) => {
       if (user) {
+        // 이미 처리 중이거나 같은 UID로 로그인된 상태면 무시 (중복 방지)
+        if (window._fbProcessing) {
+          console.log('[onAuthStateChanged] 이미 처리 중이라 무시');
+          return;
+        }
+        if (window._fbLastUid === user.uid) {
+          console.log('[onAuthStateChanged] 같은 UID 재발동, 무시');
+          return;
+        }
+        window._fbProcessing = true;
+        window._fbLastUid = user.uid;
+        
         console.log('=== 로그인 정보 ===');
         console.log('email:', user.email);
         console.log('displayName:', user.displayName);
         console.log('uid:', user.uid);
         
-        // 이메일 추출 - 여러 경로 시도
+        // 이메일 추출
         let userEmail = user.email;
         if (!userEmail && user.providerData && user.providerData.length > 0) {
           userEmail = user.providerData[0].email;
@@ -719,12 +731,18 @@ if (isFirebaseConfigured) {
         // 이메일이 없으면 UID로 식별
         const finalEmail = userEmail || `${user.uid}@unknown.local`;
         
-        window._fbHandleLogin && window._fbHandleLogin({
+        Promise.resolve(window._fbHandleLogin && window._fbHandleLogin({
           uid: user.uid,
           email: finalEmail,
           name: user.displayName || '사용자',
           photo: user.photoURL
+        })).finally(() => {
+          window._fbProcessing = false;
         });
+      } else {
+        // 로그아웃 시
+        window._fbLastUid = null;
+        window._fbProcessing = false;
       }
     });
   } catch (e) { console.error('Firebase init failed', e); }
@@ -1038,7 +1056,11 @@ async function logout() {
       state.currentProject = null;
       state.filter = null;
       state.page = 'home';
+      state.modal = null;
       localStorage.removeItem(USER_KEY);
+      // onAuthStateChanged 중복 방지 플래그 초기화
+      window._fbLastUid = null;
+      window._fbProcessing = false;
       if (window.firebaseReady) {
         try { await window.googleSignOut(); } catch {}
       }
@@ -1086,6 +1108,11 @@ window._fbHandleLogin = async (googleData) => {
   
   if (matched) {
     console.log('[_fbHandleLogin] 매칭된 멤버:', matched.name);
+    // googleUid 미저장이면 이번에 저장
+    if (!matched.googleUid && googleData.uid) {
+      matched.googleUid = googleData.uid;
+      saveData();
+    }
     loginAsMember(matched.id, googleData);
     return;
   }
@@ -1113,26 +1140,79 @@ function googleAccountToMember(memberId) {
   loginAsMember(memberId, g);
 }
 
-function googleAccountToNewMember() {
+async function googleAccountToNewMember() {
   const g = state.modal.google;
-  console.log('[googleAccountToNewMember] 새 멤버 추가:', g);
+  console.log('[googleAccountToNewMember] 새 멤버 추가 시작:', g);
+  
+  // 일단 모달부터 닫기
+  state.modal = null;
+  
+  // 1) Firestore에서 최신 데이터 한 번 더 확인 (race 방지)
+  if (window.firebaseReady && window.firestoreDb) {
+    try {
+      const { getDoc } = await import("https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js");
+      const docRef = window.firestoreDoc(window.firestoreDb, 'boards', window.SHARED_DOC_ID);
+      const snap = await getDoc(docRef);
+      if (snap.exists() && snap.data().payload) {
+        state.data = JSON.parse(snap.data().payload);
+        normalizeData();
+        console.log('[googleAccountToNewMember] 최신 데이터 수신, 멤버:', state.data.members.length);
+        
+        // 이미 등록된 사용자인지 확인 (UID로)
+        const existing = state.data.members.find(m => m.googleUid === g.uid);
+        if (existing) {
+          console.log('[googleAccountToNewMember] 이미 등록된 사용자, 자동 매칭:', existing.name);
+          loginAsMember(existing.id, g);
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('[googleAccountToNewMember] 최신 데이터 가져오기 실패', e);
+    }
+  }
+  
+  // 2) 새 멤버 추가
   const newMember = {
     id: 'm' + Date.now(),
-    name: g.name || g.email.split('@')[0] || '사용자',
+    name: g.name || (g.email || 'user').split('@')[0],
     role: '팀원',
     dept: 'ops',
     email: g.email && !g.email.endsWith('@unknown.local') ? g.email : '',
-    googleUid: g.uid  // UID로도 매칭 가능하도록 저장
+    googleUid: g.uid
   };
   state.data.members.push(newMember);
-  saveData();
-  state.modal = null;
+  console.log('[googleAccountToNewMember] 새 멤버 추가됨:', newMember);
+  
+  // 3) 즉시 Firestore에 강제 push (snap 받기 전이라도)
+  saveLocal();
+  if (window.firebaseReady && window.firestoreDb) {
+    try {
+      const docRef = window.firestoreDoc(window.firestoreDb, 'boards', window.SHARED_DOC_ID);
+      await window.firestoreSetDoc(docRef, {
+        payload: JSON.stringify(state.data),
+        updatedAt: window.firestoreServerTimestamp(),
+        updatedBy: g.email || g.uid
+      });
+      console.log('[googleAccountToNewMember] Firestore 직접 push 완료');
+    } catch (e) {
+      console.error('[googleAccountToNewMember] Firestore push 실패', e);
+    }
+  }
+  
+  // 4) 로그인 처리
   loginAsMember(newMember.id, g);
 }
 
 // 계정 연결 화면에서 "다른 계정으로 로그인" 클릭 시
 async function logoutCancelMatch() {
   state.modal = null;
+  state.currentUser = null;
+  state.googleUser = null;
+  state.view = 'login';
+  localStorage.removeItem(USER_KEY);
+  window._fbLastUid = null;
+  window._fbProcessing = false;
+  stopFirestoreSync();
   if (window.firebaseReady) {
     try { await window.googleSignOut(); } catch {}
   }
@@ -1700,16 +1780,16 @@ function renderNavTabs() {
 function renderHome() {
   const stats = getMyStats();
   const me = avatarFor(state.currentUser);
-  // 멤버 정보가 없으면 (드물게 발생) → 로그인 화면으로 돌려보냄
+  // 멤버 정보가 없으면 → 본인을 다시 등록하도록 안내 (무한 로그아웃 방지)
   if (!me) {
-    console.warn('[renderHome] 현재 사용자 멤버 정보 없음. 로그인 화면으로 이동.');
-    setTimeout(() => {
-      state.view = 'login';
-      state.currentUser = null;
-      state.googleUser = null;
-      localStorage.removeItem(USER_KEY);
-      render();
-    }, 0);
+    console.warn('[renderHome] 현재 사용자 멤버 정보 없음 → 다시 등록 모달 표시');
+    // 재진입 방지: 이미 모달이 띄워져 있으면 처리 안 함
+    if (!state.modal && state.googleUser) {
+      setTimeout(() => {
+        state.modal = { name: 'matchGoogle', google: state.googleUser };
+        render();
+      }, 0);
+    }
     return '<div style="padding: 4rem; text-align: center;">사용자 정보를 불러오는 중...</div>';
   }
   const filteredTasks = state.filter ? stats.all.filter(t => {
@@ -2092,41 +2172,26 @@ function renderModal() {
   }
   if (m.name === 'matchGoogle') {
     const g = m.google;
-    const hasNoMembers = state.data.members.filter(mem => !mem.email).length === 0;
     return `
-      <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-        <div class="modal" style="max-width: 460px;">
-          <div class="modal-head"><div class="modal-t">${hasNoMembers ? '환영합니다!' : '계정 연결'}</div></div>
+      <div class="modal-bg">
+        <div class="modal" style="max-width: 440px;">
+          <div class="modal-head"><div class="modal-t">환영합니다!</div></div>
           
           <div style="display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--paper-soft); border: 1px solid var(--line); border-radius: var(--r-sm); margin-bottom: 16px;">
-            ${g.photo ? `<img src="${g.photo}" referrerpolicy="no-referrer" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover;" alt="${escapeHtml(g.name)}"/>` : `<div style="width: 44px; height: 44px; border-radius: 50%; background: var(--c-blue-bg); color: var(--c-blue-ink); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px;">${escapeHtml((g.name || g.email || '?').charAt(0))}</div>`}
+            ${g.photo ? `<img src="${g.photo}" referrerpolicy="no-referrer" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover;" alt="${escapeHtml(g.name)}"/>` : `<div style="width: 44px; height: 44px; border-radius: 50%; background: var(--c-blue-bg); color: var(--c-blue-ink); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px;">${escapeHtml((g.name || '?').charAt(0))}</div>`}
             <div style="flex: 1; min-width: 0;">
               <div style="font-size: 15px; font-weight: 700; margin-bottom: 2px;">${escapeHtml(g.name || '사용자')}</div>
-              <div style="font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(g.email)}</div>
+              <div style="font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(g.email)}</div>
             </div>
           </div>
           
           <p style="margin-bottom: 18px; font-size: 13px; color: var(--ink-2); line-height: 1.6;">
-            ${hasNoMembers 
-              ? '이 계정으로 처음 접속하셨네요.<br/>아래 버튼을 눌러 첫 멤버로 등록해주세요.' 
-              : '이 계정을 어떻게 등록할까요?<br/>기존 멤버에 연결하거나 새 멤버로 추가하세요.'}
+            이 계정으로 협업 보드에 참여하시겠습니까?<br/>
+            <span style="color: var(--ink-3); font-size: 12px;">참여 후엔 자동으로 본인으로 인식됩니다.</span>
           </p>
           
-          ${!hasNoMembers ? `
-            <label class="f-l">기존 멤버에 연결</label>
-            <div class="member-list" style="max-height: 240px; margin-bottom: 14px;">
-              ${state.data.members.filter(mem => !mem.email).map(mem => `
-                <div class="m-row" style="cursor: pointer;" onclick="googleAccountToMember('${mem.id}')">
-                  ${avatarHtml(mem.id, 32)}
-                  <div class="m-row-info"><div class="m-row-n">${escapeHtml(mem.name)}</div><div class="m-row-r">${escapeHtml(mem.role)}</div></div>
-                  <i class="ti ti-arrow-right" style="color: var(--ink-3);"></i>
-                </div>
-              `).join('')}
-            </div>
-          ` : ''}
-          
           <button class="primary" style="width: 100%; padding: 13px; font-size: 14px;" onclick="googleAccountToNewMember()">
-            <i class="ti ti-user-plus"></i> ${hasNoMembers ? '첫 멤버로 시작하기' : '새 멤버로 추가'}
+            <i class="ti ti-user-plus"></i> 참여하기
           </button>
           
           <div class="modal-actions"><button onclick="logoutCancelMatch()">다른 계정으로 로그인</button></div>
