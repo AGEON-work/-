@@ -312,7 +312,30 @@ input:focus, select:focus, textarea:focus {
 }
 .empty-state-box:hover { border-color: var(--ink); background: var(--bg-2); }
 
-.task { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; transition: all 0.15s; }
+.task { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; transition: all 0.15s; position: relative; }
+.task[draggable="true"] { cursor: grab; }
+.task[draggable="true"]:active { cursor: grabbing; }
+.task.task-dragging { opacity: 0.4; transform: scale(0.98); }
+.task.task-drop-before::before {
+  content: ''; position: absolute; top: -3px; left: 0; right: 0;
+  height: 3px; background: var(--ink); border-radius: 2px;
+}
+.task.task-drop-after::after {
+  content: ''; position: absolute; bottom: -3px; left: 0; right: 0;
+  height: 3px; background: var(--ink); border-radius: 2px;
+}
+.task-drag-handle {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-4); flex-shrink: 0; padding: 2px;
+  cursor: grab; transition: color 0.12s;
+}
+.task-drag-handle:hover { color: var(--ink-2); }
+.task-drag-handle svg { display: block; }
+.col.task-drop-zone-active {
+  background: var(--bg-2);
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(26, 26, 26, 0.06);
+}
 .task:hover { border-color: var(--line-3); }
 .task-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .task-t { font-size: 15px; font-weight: 700; line-height: 1.4; word-break: keep-all; letter-spacing: -0.005em; flex: 1; min-width: 0; }
@@ -874,6 +897,7 @@ let state = {
   view: 'login', currentUser: null, googleUser: null, currentProject: null,
   data: null, modal: null, openDropdown: null, filter: null,
   draggingProject: null, dragOverCategory: null,
+  draggingTask: null,
   page: 'home', // home | archive
   loginError: null,
   syncStatus: 'offline', // offline | syncing | online
@@ -1343,6 +1367,122 @@ function drop(e, category) {
   state.draggingProject = null;
   state.dragOverCategory = null;
   render();
+}
+
+/* === TASK DRAG & DROP === */
+function taskDragStart(e, taskId) {
+  e.stopPropagation();
+  state.draggingTask = taskId;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('task-id', taskId);
+  setTimeout(() => {
+    const card = document.querySelector(`[data-task-id="${taskId}"]`);
+    if (card) card.classList.add('task-dragging');
+  }, 0);
+}
+function taskDragEnd(e) {
+  document.querySelectorAll('.task-dragging').forEach(el => el.classList.remove('task-dragging'));
+  document.querySelectorAll('.task-drop-zone-active').forEach(el => el.classList.remove('task-drop-zone-active'));
+  document.querySelectorAll('.task-drop-before, .task-drop-after').forEach(el => el.classList.remove('task-drop-before', 'task-drop-after'));
+  state.draggingTask = null;
+}
+function taskDragOverTask(e, targetTaskId) {
+  if (!state.draggingTask || state.draggingTask === targetTaskId) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = 'move';
+  const card = e.currentTarget;
+  const rect = card.getBoundingClientRect();
+  const midY = rect.top + rect.height / 2;
+  // 기존 표시 제거
+  document.querySelectorAll('.task-drop-before, .task-drop-after').forEach(el => el.classList.remove('task-drop-before', 'task-drop-after'));
+  // 마우스가 카드 상단/하단 중 어디 있는지에 따라 표시
+  if (e.clientY < midY) {
+    card.classList.add('task-drop-before');
+  } else {
+    card.classList.add('task-drop-after');
+  }
+}
+function taskDragOverColumn(e, deptKey) {
+  if (!state.draggingTask) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // 빈 컬럼이거나 카드 외 영역일 때 컬럼 강조
+  const col = e.currentTarget;
+  if (!e.target.closest('.task')) {
+    document.querySelectorAll('.task-drop-zone-active').forEach(el => el.classList.remove('task-drop-zone-active'));
+    col.classList.add('task-drop-zone-active');
+  }
+}
+function taskDragLeaveTask(e) {
+  // 다른 자식 요소로 들어간 게 아니면 표시 제거
+  const card = e.currentTarget;
+  if (!card.contains(e.relatedTarget)) {
+    card.classList.remove('task-drop-before', 'task-drop-after');
+  }
+}
+function taskDropOnTask(e, targetTaskId) {
+  e.preventDefault();
+  e.stopPropagation();
+  const draggedTaskId = e.dataTransfer.getData('task-id') || state.draggingTask;
+  if (!draggedTaskId || draggedTaskId === targetTaskId) {
+    taskDragEnd();
+    return;
+  }
+  const card = e.currentTarget;
+  const insertBefore = card.classList.contains('task-drop-before');
+  
+  const project = state.data.projects.find(p => p.id === state.currentProject);
+  if (!project) return;
+  
+  const draggedIdx = project.tasks.findIndex(t => t.id === draggedTaskId);
+  const targetIdx = project.tasks.findIndex(t => t.id === targetTaskId);
+  if (draggedIdx < 0 || targetIdx < 0) return;
+  
+  const draggedTask = project.tasks[draggedIdx];
+  const targetTask = project.tasks[targetIdx];
+  
+  // 대상의 부서로 이동
+  draggedTask.dept = targetTask.dept;
+  
+  // 배열에서 제거
+  project.tasks.splice(draggedIdx, 1);
+  
+  // 새 위치 계산
+  let newIdx = project.tasks.findIndex(t => t.id === targetTaskId);
+  if (!insertBefore) newIdx++;
+  
+  // 삽입
+  project.tasks.splice(newIdx, 0, draggedTask);
+  
+  taskDragEnd();
+  saveData(); render();
+}
+function taskDropOnColumn(e, deptKey) {
+  e.preventDefault();
+  const draggedTaskId = e.dataTransfer.getData('task-id') || state.draggingTask;
+  if (!draggedTaskId) { taskDragEnd(); return; }
+  // 카드 위가 아닌 빈 영역에 드롭한 경우만 처리 (카드 위 드롭은 taskDropOnTask가 처리)
+  if (e.target.closest('.task')) { taskDragEnd(); return; }
+  
+  const project = state.data.projects.find(p => p.id === state.currentProject);
+  if (!project) return;
+  
+  const draggedIdx = project.tasks.findIndex(t => t.id === draggedTaskId);
+  if (draggedIdx < 0) return;
+  
+  const draggedTask = project.tasks[draggedIdx];
+  draggedTask.dept = deptKey;
+  
+  // 해당 부서의 마지막 위치로 이동
+  project.tasks.splice(draggedIdx, 1);
+  // 같은 부서의 마지막 인덱스 + 1 위치 찾기
+  let lastDeptIdx = -1;
+  project.tasks.forEach((t, i) => { if (t.dept === deptKey) lastDeptIdx = i; });
+  project.tasks.splice(lastDeptIdx + 1, 0, draggedTask);
+  
+  taskDragEnd();
+  saveData(); render();
 }
 
 /* === Task ops === */
@@ -2161,7 +2301,8 @@ function renderProject() {
         ${Object.entries(DEPTS).map(([key, dept]) => {
           const tasks = p.tasks.filter(t => t.dept === key);
           return `
-            <div class="col">
+            <div class="col" data-dept="${key}"
+                 ${!isArchived ? `ondragover="taskDragOverColumn(event, '${key}')" ondrop="taskDropOnColumn(event, '${key}')"` : ''}>
               <div class="col-head">
                 <div class="col-head-main">
                   <div class="dept-name-block">
@@ -2179,8 +2320,15 @@ function renderProject() {
                 </div>` : tasks.map(t => {
                   const participants = t.participants || [];
                   return `
-                    <div class="task">
+                    <div class="task" data-task-id="${t.id}"
+                         ${!isArchived ? `draggable="true"
+                         ondragstart="taskDragStart(event, '${t.id}')"
+                         ondragend="taskDragEnd(event)"
+                         ondragover="taskDragOverTask(event, '${t.id}')"
+                         ondragleave="taskDragLeaveTask(event)"
+                         ondrop="taskDropOnTask(event, '${t.id}')"` : ''}>
                       <div class="task-head">
+                        ${!isArchived ? '<span class="task-drag-handle" title="드래그로 순서 변경"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg></span>' : ''}
                         <div class="task-t">${escapeHtml(t.title)}</div>
                         ${statusBadge(t.status)}
                       </div>
