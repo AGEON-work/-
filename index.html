@@ -670,7 +670,7 @@ const firebaseConfig = {
 };
 
 // 회사 도메인 — 이 도메인 이메일만 로그인 허용
-const ALLOWED_DOMAIN = "ageonbio.com";
+// const ALLOWED_DOMAIN = "ageonbio.com";
 
 // 공유 문서 ID — 모든 팀원이 같은 데이터를 봄
 const SHARED_DOC_ID = "team-board-main";
@@ -688,20 +688,30 @@ if (isFirebaseConfigured) {
     db = getFirestore(app);
     firebaseReady = true;
 
-   onAuthStateChanged(auth, (user) => {
+ onAuthStateChanged(auth, (user) => {
   if (user) {
-    console.log('=== 로그인 정보 확인 ===');
+    console.log('=== 로그인 정보 ===');
     console.log('email:', user.email);
-    console.log('displayName:', user.displayName);
     console.log('uid:', user.uid);
-    console.log('providerData:', user.providerData);
     
-    // 도메인 검증
-    if (!user.email || !user.email.toLowerCase().endsWith('@' + ALLOWED_DOMAIN)) {
-      signOut(auth);
-      window._fbHandleDomainError && window._fbHandleDomainError(user.email);
-      return;
+    // 이메일이 없으면 → providerData에서 이메일 추출 시도
+    let userEmail = user.email;
+    if (!userEmail && user.providerData && user.providerData.length > 0) {
+      userEmail = user.providerData[0].email;
+      console.log('providerData에서 이메일 추출:', userEmail);
     }
+    
+    // 이메일이 있으면 그대로 진행, 없으면 UID로 식별
+    const finalEmail = userEmail || `${user.uid}@unknown.local`;
+    
+    window._fbHandleLogin && window._fbHandleLogin({
+      uid: user.uid, 
+      email: finalEmail, 
+      name: user.displayName || '사용자', 
+      photo: user.photoURL
+    });
+  }
+});
         window._fbHandleLogin && window._fbHandleLogin({
           uid: user.uid, email: user.email, name: user.displayName, photo: user.photoURL
         });
