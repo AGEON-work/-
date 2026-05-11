@@ -684,18 +684,24 @@ if (isFirebaseConfigured) {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ hd: ALLOWED_DOMAIN }); // 구글 로그인 화면에서 회사 도메인만 표시
+    // provider.setCustomParameters({ hd: ALLOWED_DOMAIN }); // 구글 로그인 화면에서 회사 도메인만 표시
     db = getFirestore(app);
     firebaseReady = true;
 
-    onAuthStateChanged(auth, (user) => {
-      if (user) {
-        // 도메인 검증
-        if (!user.email || !user.email.toLowerCase().endsWith('@' + ALLOWED_DOMAIN)) {
-          signOut(auth);
-          window._fbHandleDomainError && window._fbHandleDomainError(user.email);
-          return;
-        }
+   onAuthStateChanged(auth, (user) => {
+  if (user) {
+    console.log('=== 로그인 정보 확인 ===');
+    console.log('email:', user.email);
+    console.log('displayName:', user.displayName);
+    console.log('uid:', user.uid);
+    console.log('providerData:', user.providerData);
+    
+    // 도메인 검증
+    if (!user.email || !user.email.toLowerCase().endsWith('@' + ALLOWED_DOMAIN)) {
+      signOut(auth);
+      window._fbHandleDomainError && window._fbHandleDomainError(user.email);
+      return;
+    }
         window._fbHandleLogin && window._fbHandleLogin({
           uid: user.uid, email: user.email, name: user.displayName, photo: user.photoURL
         });
