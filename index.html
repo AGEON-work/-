@@ -1009,13 +1009,30 @@ async function logout() {
 
 window._fbHandleLogin = (googleData) => {
   state.loginError = null;
-  let matched = state.data.members.find(m => m.email && m.email.toLowerCase() === googleData.email.toLowerCase());
-  if (!matched) {
-    state.modal = { name: 'matchGoogle', google: googleData };
-    render();
+  console.log('[_fbHandleLogin] googleData:', googleData);
+  
+  // 1) 이메일로 매칭 시도
+  let matched = null;
+  if (googleData.email && !googleData.email.endsWith('@unknown.local')) {
+    matched = state.data.members.find(m => m.email && m.email.toLowerCase() === googleData.email.toLowerCase());
+  }
+  
+  // 2) UID로도 매칭 시도 (이메일이 없는 경우)
+  if (!matched && googleData.uid) {
+    matched = state.data.members.find(m => m.googleUid === googleData.uid);
+  }
+  
+  if (matched) {
+    // 매칭된 멤버 발견 → 바로 로그인
+    console.log('[_fbHandleLogin] 매칭된 멤버:', matched.name);
+    loginAsMember(matched.id, googleData);
     return;
   }
-  loginAsMember(matched.id, googleData);
+  
+  // 3) 매칭 안 됨 → 계정 연결 모달 표시
+  console.log('[_fbHandleLogin] 신규 사용자, 계정 연결 모달 표시');
+  state.modal = { name: 'matchGoogle', google: googleData };
+  render();
 };
 
 window._fbHandleDomainError = (email) => {
@@ -1026,14 +1043,26 @@ window._fbHandleDomainError = (email) => {
 function googleAccountToMember(memberId) {
   const g = state.modal.google;
   const m = state.data.members.find(x => x.id === memberId);
-  if (m) { m.email = g.email; saveData(); }
+  if (m) {
+    if (g.email && !g.email.endsWith('@unknown.local')) m.email = g.email;
+    m.googleUid = g.uid;  // UID 매칭용
+    saveData();
+  }
   state.modal = null;
   loginAsMember(memberId, g);
 }
 
 function googleAccountToNewMember() {
   const g = state.modal.google;
-  const m = { id: 'm' + Date.now(), name: g.name || g.email.split('@')[0], role: '팀원', dept: 'ops', email: g.email };
+  console.log('[googleAccountToNewMember] 새 멤버 추가:', g);
+  const m = {
+    id: 'm' + Date.now(),
+    name: g.name || g.email.split('@')[0] || '사용자',
+    role: '팀원',
+    dept: 'ops',
+    email: g.email && !g.email.endsWith('@unknown.local') ? g.email : '',
+    googleUid: g.uid  // UID로도 매칭 가능하도록 저장
+  };
   state.data.members.push(m);
   saveData();
   state.modal = null;
@@ -1610,6 +1639,18 @@ function renderNavTabs() {
 function renderHome() {
   const stats = getMyStats();
   const me = avatarFor(state.currentUser);
+  // 멤버 정보가 없으면 (드물게 발생) → 로그인 화면으로 돌려보냄
+  if (!me) {
+    console.warn('[renderHome] 현재 사용자 멤버 정보 없음. 로그인 화면으로 이동.');
+    setTimeout(() => {
+      state.view = 'login';
+      state.currentUser = null;
+      state.googleUser = null;
+      localStorage.removeItem(USER_KEY);
+      render();
+    }, 0);
+    return '<div style="padding: 4rem; text-align: center;">사용자 정보를 불러오는 중...</div>';
+  }
   const filteredTasks = state.filter ? stats.all.filter(t => {
     if (state.filter === 'todo') return t.assigneeId === state.currentUser && t.status === 'todo';
     if (state.filter === 'progress') return t.assigneeId === state.currentUser && t.status === 'progress';
