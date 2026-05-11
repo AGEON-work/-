@@ -681,7 +681,35 @@ input:focus, select:focus, textarea:focus {
 .modal-actions { display: flex; gap: 8px; margin-top: 24px; justify-content: flex-end; }
 
 .member-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; margin-bottom: 18px; }
-.m-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--paper-soft); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.m-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--paper-soft); border: 1px solid var(--line); border-radius: var(--r-sm); transition: all 0.15s; }
+.m-row-clickable { cursor: pointer; }
+.m-row-clickable:hover { background: var(--bg-2); border-color: var(--line-3); }
+.m-row-editing { background: var(--paper); border-color: var(--ink); box-shadow: 0 0 0 3px rgba(26,26,26,0.06); padding: 14px; }
+.m-row-edit-btn, .m-row-del-btn {
+  background: transparent;
+  border: 1px solid var(--line-2);
+  width: 30px; height: 30px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2);
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+.m-row-edit-btn:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.m-row-del-btn:hover {
+  background: var(--c-red-ink);
+  color: var(--paper);
+  border-color: var(--c-red-ink);
+}
+.m-row-edit-btn svg, .m-row-del-btn svg { display: block; }
 .m-row-info { flex: 1; min-width: 0; }
 .m-row-n { font-size: 13px; font-weight: 700; }
 .m-row-r { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
@@ -851,7 +879,8 @@ let state = {
   syncStatus: 'offline', // offline | syncing | online
   unsubscribeFirestore: null,
   isApplyingRemoteUpdate: false,
-  editingNote: null // { taskId, noteId } — 현재 수정 중인 메모
+  editingNote: null, // { taskId, noteId } — 현재 수정 중인 메모
+  editingMember: null // 현재 수정 중인 멤버 ID
 };
 
 const STORAGE_KEY = 'exoproxyl-board-data-v6';
@@ -1209,7 +1238,6 @@ async function googleAccountToNewMember() {
     id: 'm' + Date.now(),
     name: g.name || (g.email || 'user').split('@')[0],
     role: '팀원',
-    dept: 'ops',
     email: g.email && !g.email.endsWith('@unknown.local') ? g.email : '',
     googleUid: g.uid
   };
@@ -1564,12 +1592,39 @@ function addMemberSubmit() {
   if (!name) { alert('이름을 입력하세요'); return; }
   state.data.members.push({
     id: 'm' + Date.now(), name,
-    role: document.getElementById('new-member-role').value,
-    dept: document.getElementById('new-member-dept').value,
+    role: document.getElementById('new-member-role').value || '팀원',
     email: document.getElementById('new-member-email').value.trim()
   });
   ['new-member-name','new-member-role','new-member-email'].forEach(id => document.getElementById(id).value = '');
   saveData(); render();
+}
+function startEditMember(memberId) {
+  state.editingMember = memberId;
+  render();
+  setTimeout(() => {
+    const el = document.getElementById(`edit-member-name-${memberId}`);
+    if (el) { el.focus(); el.select(); }
+  }, 50);
+}
+function cancelEditMember() {
+  state.editingMember = null;
+  render();
+}
+function saveEditMember(memberId) {
+  const nameEl = document.getElementById(`edit-member-name-${memberId}`);
+  const roleEl = document.getElementById(`edit-member-role-${memberId}`);
+  const emailEl = document.getElementById(`edit-member-email-${memberId}`);
+  if (!nameEl) return;
+  const name = nameEl.value.trim();
+  if (!name) { alert('이름을 입력하세요'); return; }
+  const m = state.data.members.find(x => x.id === memberId);
+  if (m) {
+    m.name = name;
+    m.role = roleEl.value.trim() || '팀원';
+    m.email = emailEl.value.trim();
+    state.editingMember = null;
+    saveData(); render();
+  }
 }
 function deleteMember(memberId) {
   showConfirm({
@@ -2276,29 +2331,63 @@ function renderModal() {
   }
   if (m.name === 'members') {
     const deptOpts = Object.entries(DEPTS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+    const editingId = state.editingMember;
     return `
       <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-        <div class="modal" style="max-width: 540px;">
-          <div class="modal-head"><div class="modal-t">팀 멤버</div><button class="sm icon ghost" onclick="closeModal()"><i class="ti ti-x"></i></button></div>
+        <div class="modal" style="max-width: 560px;">
+          <div class="modal-head"><div class="modal-t">팀 멤버 관리</div><button class="sm icon ghost" onclick="closeModal()"><i class="ti ti-x"></i></button></div>
+          
+          <div style="background: var(--paper-soft); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 14px; margin-bottom: 14px; font-size: 12px; color: var(--ink-3); line-height: 1.5;">
+            <i class="ti ti-info-circle" style="vertical-align: -2px;"></i>
+            각 멤버를 <strong>클릭하면 수정</strong>할 수 있고, 우측 휴지통 아이콘으로 삭제할 수 있습니다.
+          </div>
+          
           <div class="member-list">
-            ${state.data.members.map(mem => `
-              <div class="m-row">
-                ${avatarHtml(mem.id, 36)}
-                <div class="m-row-info">
-                  <div class="m-row-n">${escapeHtml(mem.name)}</div>
-                  <div class="m-row-r">${escapeHtml(mem.role)} · ${DEPTS[mem.dept]?.label || mem.dept}${mem.email ? ` · ${escapeHtml(mem.email)}` : ''}</div>
+            ${state.data.members.map(mem => {
+              const isMe = mem.id === state.currentUser;
+              const isEditing = editingId === mem.id;
+              if (isEditing) {
+                return `
+                  <div class="m-row m-row-editing">
+                    ${avatarHtml(mem.id, 36)}
+                    <div class="m-row-info" style="display: flex; flex-direction: column; gap: 6px; width: 100%;">
+                      <input id="edit-member-name-${mem.id}" type="text" value="${escapeHtml(mem.name)}" placeholder="이름" style="padding: 6px 10px; font-size: 13px; font-weight: 700;" />
+                      <input id="edit-member-role-${mem.id}" type="text" value="${escapeHtml(mem.role || '')}" placeholder="직책" style="padding: 6px 10px; font-size: 12px;" />
+                      <input id="edit-member-email-${mem.id}" type="email" value="${escapeHtml(mem.email || '')}" placeholder="이메일 (선택)" style="padding: 6px 10px; font-size: 12px;" />
+                      <div style="display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px;">
+                        <button class="tiny" onclick="cancelEditMember()">취소</button>
+                        <button class="tiny primary-tiny" style="background: var(--ink); color: var(--paper); border-color: var(--ink);" onclick="saveEditMember('${mem.id}')">저장</button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }
+              return `
+                <div class="m-row m-row-clickable" onclick="startEditMember('${mem.id}')">
+                  ${avatarHtml(mem.id, 36)}
+                  <div class="m-row-info">
+                    <div class="m-row-n">
+                      ${escapeHtml(mem.name)}
+                      ${isMe ? '<span style="margin-left: 6px; padding: 1px 8px; background: var(--c-green-bg); color: var(--c-green-ink); border-radius: 100px; font-size: 10px; font-weight: 700;">나</span>' : ''}
+                    </div>
+                    <div class="m-row-r">${escapeHtml(mem.role || '팀원')}${mem.email ? ` · ${escapeHtml(mem.email)}` : ''}</div>
+                  </div>
+                  <button class="m-row-edit-btn" onclick="event.stopPropagation(); startEditMember('${mem.id}')" title="수정">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                  </button>
+                  ${!isMe ? `<button class="m-row-del-btn" onclick="event.stopPropagation(); deleteMember('${mem.id}')" title="삭제">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"></path></svg>
+                  </button>` : ''}
                 </div>
-                <button class="sm icon ghost" onclick="deleteMember('${mem.id}')"><i class="ti ti-trash"></i></button>
-              </div>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
           <div class="add-m">
-            <label class="f-l">+ 새 멤버 추가</label>
+            <label class="f-l">+ 새 멤버 직접 추가</label>
             <div class="add-m-grid">
               <input id="new-member-name" type="text" placeholder="이름" />
-              <input id="new-member-role" type="text" placeholder="직책" />
-              <select id="new-member-dept" style="grid-column: span 2;">${deptOpts}</select>
-              <input id="new-member-email" type="email" placeholder="@ageonbio.com 이메일" style="grid-column: span 2;" />
+              <input id="new-member-role" type="text" placeholder="직책 (예: 디자이너)" />
+              <input id="new-member-email" type="email" placeholder="이메일 (선택)" style="grid-column: span 2;" />
             </div>
             <button class="primary" style="margin-top: 12px; width: 100%;" onclick="addMemberSubmit()"><i class="ti ti-plus"></i> 추가</button>
           </div>
