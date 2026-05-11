@@ -128,6 +128,19 @@ input:focus, select:focus, textarea:focus {
 .user-pill-name { font-size: 13px; font-weight: 700; }
 .user-pill-role { font-size: 10px; color: var(--ink-3); }
 
+.logout-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; font-size: 12px; font-weight: 600;
+  background: var(--paper); border: 1px solid var(--line-2);
+  border-radius: 100px; color: var(--ink-2); cursor: pointer;
+  transition: all 0.15s;
+}
+.logout-btn:hover {
+  background: var(--c-red-ink); color: var(--paper);
+  border-color: var(--c-red-ink);
+}
+.logout-btn svg { display: block; }
+
 .back-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px 8px 12px; background: var(--paper); border: 1px solid var(--line-2); border-radius: 100px; font-size: 13px; font-weight: 500; color: var(--ink-2); cursor: pointer; margin-bottom: 24px; transition: all 0.15s; }
 .back-btn:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .back-btn i { font-size: 16px; }
@@ -684,7 +697,8 @@ if (isFirebaseConfigured) {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     provider = new GoogleAuthProvider();
-    // 도메인 제한 제거 - 일반 Gmail로도 로그인 가능
+    // 매번 계정 선택 화면 표시 (자동 로그인 방지)
+    provider.setCustomParameters({ prompt: 'select_account' });
     db = getFirestore(app);
     firebaseReady = true;
 
@@ -972,16 +986,25 @@ function loginAsMember(memberId, googleData = null) {
 }
 
 async function logout() {
-  stopFirestoreSync();
-  state.currentUser = null;
-  state.googleUser = null;
-  state.view = 'login';
-  state.currentProject = null;
-  state.filter = null;
-  state.page = 'home';
-  localStorage.removeItem(USER_KEY);
-  if (window.firebaseReady) await window.googleSignOut();
-  render();
+  showConfirm({
+    title: '로그아웃',
+    message: '정말 로그아웃하시겠습니까?',
+    confirmText: '로그아웃',
+    onConfirm: async () => {
+      stopFirestoreSync();
+      state.currentUser = null;
+      state.googleUser = null;
+      state.view = 'login';
+      state.currentProject = null;
+      state.filter = null;
+      state.page = 'home';
+      localStorage.removeItem(USER_KEY);
+      if (window.firebaseReady) {
+        try { await window.googleSignOut(); } catch {}
+      }
+      render();
+    }
+  });
 }
 
 window._fbHandleLogin = (googleData) => {
@@ -1015,6 +1038,15 @@ function googleAccountToNewMember() {
   saveData();
   state.modal = null;
   loginAsMember(m.id, g);
+}
+
+// 계정 연결 화면에서 "다른 계정으로 로그인" 클릭 시
+async function logoutCancelMatch() {
+  state.modal = null;
+  if (window.firebaseReady) {
+    try { await window.googleSignOut(); } catch {}
+  }
+  render();
 }
 
 /* === NAV === */
@@ -1551,7 +1583,10 @@ function renderTopbar() {
             <div class="user-pill-role">${escapeHtml(me.role)}</div>
           </div>
         </div>
-        <button class="sm ghost" onclick="logout()" title="로그아웃"><i class="ti ti-logout"></i></button>
+        <button class="logout-btn" onclick="logout()" title="로그아웃">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          <span>로그아웃</span>
+        </button>
       </div>
     </div>
   `;
@@ -1955,26 +1990,44 @@ function renderModal() {
   }
   if (m.name === 'matchGoogle') {
     const g = m.google;
+    const hasNoMembers = state.data.members.filter(mem => !mem.email).length === 0;
     return `
       <div class="modal-bg" onclick="if(event.target===this)closeModal()">
-        <div class="modal">
-          <div class="modal-head"><div class="modal-t">계정 연결</div></div>
-          <p style="margin-bottom: 18px; font-size: 14px; color: var(--ink-2); line-height: 1.6;">
-            <strong>${escapeHtml(g.email)}</strong>은 아직 멤버에 등록되지 않았습니다.<br/>기존 멤버에 연결하거나 새 멤버로 추가하세요.
-          </p>
-          <label class="f-l">기존 멤버에 연결</label>
-          <div class="member-list" style="max-height: 280px; margin-bottom: 14px;">
-            ${state.data.members.filter(mem => !mem.email).map(mem => `
-              <div class="m-row" style="cursor: pointer;" onclick="googleAccountToMember('${mem.id}')">
-                ${avatarHtml(mem.id, 32)}
-                <div class="m-row-info"><div class="m-row-n">${escapeHtml(mem.name)}</div><div class="m-row-r">${escapeHtml(mem.role)}</div></div>
-                <i class="ti ti-arrow-right" style="color: var(--ink-3);"></i>
-              </div>
-            `).join('')}
-            ${state.data.members.filter(mem => !mem.email).length === 0 ? `<p style="text-align: center; padding: 16px; font-size: 12px; color: var(--ink-4);">연결 가능한 멤버가 없습니다</p>` : ''}
+        <div class="modal" style="max-width: 460px;">
+          <div class="modal-head"><div class="modal-t">${hasNoMembers ? '환영합니다!' : '계정 연결'}</div></div>
+          
+          <div style="display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--paper-soft); border: 1px solid var(--line); border-radius: var(--r-sm); margin-bottom: 16px;">
+            ${g.photo ? `<img src="${g.photo}" referrerpolicy="no-referrer" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover;" alt="${escapeHtml(g.name)}"/>` : `<div style="width: 44px; height: 44px; border-radius: 50%; background: var(--c-blue-bg); color: var(--c-blue-ink); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px;">${escapeHtml((g.name || g.email || '?').charAt(0))}</div>`}
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 15px; font-weight: 700; margin-bottom: 2px;">${escapeHtml(g.name || '사용자')}</div>
+              <div style="font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(g.email)}</div>
+            </div>
           </div>
-          <button class="primary" style="width: 100%;" onclick="googleAccountToNewMember()"><i class="ti ti-plus"></i> 새 멤버로 추가</button>
-          <div class="modal-actions"><button onclick="closeModal()">취소</button></div>
+          
+          <p style="margin-bottom: 18px; font-size: 13px; color: var(--ink-2); line-height: 1.6;">
+            ${hasNoMembers 
+              ? '이 계정으로 처음 접속하셨네요.<br/>아래 버튼을 눌러 첫 멤버로 등록해주세요.' 
+              : '이 계정을 어떻게 등록할까요?<br/>기존 멤버에 연결하거나 새 멤버로 추가하세요.'}
+          </p>
+          
+          ${!hasNoMembers ? `
+            <label class="f-l">기존 멤버에 연결</label>
+            <div class="member-list" style="max-height: 240px; margin-bottom: 14px;">
+              ${state.data.members.filter(mem => !mem.email).map(mem => `
+                <div class="m-row" style="cursor: pointer;" onclick="googleAccountToMember('${mem.id}')">
+                  ${avatarHtml(mem.id, 32)}
+                  <div class="m-row-info"><div class="m-row-n">${escapeHtml(mem.name)}</div><div class="m-row-r">${escapeHtml(mem.role)}</div></div>
+                  <i class="ti ti-arrow-right" style="color: var(--ink-3);"></i>
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+          
+          <button class="primary" style="width: 100%; padding: 13px; font-size: 14px;" onclick="googleAccountToNewMember()">
+            <i class="ti ti-user-plus"></i> ${hasNoMembers ? '첫 멤버로 시작하기' : '새 멤버로 추가'}
+          </button>
+          
+          <div class="modal-actions"><button onclick="logoutCancelMatch()">다른 계정으로 로그인</button></div>
         </div>
       </div>`;
   }
